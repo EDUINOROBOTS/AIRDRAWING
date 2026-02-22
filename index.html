@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Air Drawing & Emoji Assembly</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: black;
+      font-family: Arial;
+      color: white;
+      text-align: center;
+    }
+
+    #menu {
+      position: absolute;
+      top: 40%;
+      width: 100%;
+    }
+
+    button {
+      padding: 15px 30px;
+      margin: 10px;
+      font-size: 18px;
+      cursor: pointer;
+    }
+
+    video { display:none; }
+
+    canvas {
+      position:absolute;
+      top:0;
+      left:0;
+      display:none;
+    }
+
+    #backBtn {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      display: none;
+      z-index: 10;
+    }
+
+    #finishBtn {
+      position:absolute;
+      bottom:30px;
+      right:30px;
+      display:none;
+      z-index:10;
+    }
+
+    #colorPalette {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      z-index: 10;
+    }
+
+    .colorCircle {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: inline-block;
+      margin: 10px;
+      cursor: pointer;
+      border: 3px solid white;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="menu">
+  <h1>Select Mode</h1>
+  <button onclick="startMode('draw')">Air Drawing</button>
+  <button onclick="startMode('shape')">Emoji Assembly</button>
+</div>
+
+<button id="backBtn" onclick="goBack()">Back</button>
+<button id="finishBtn" onclick="calculateEmojiAccuracy()">Finish</button>
+
+<div id="colorPalette">
+  <div class="colorCircle" style="background:red" onclick="setColor('red')"></div>
+  <div class="colorCircle" style="background:blue" onclick="setColor('blue')"></div>
+  <div class="colorCircle" style="background:green" onclick="setColor('green')"></div>
+  <div class="colorCircle" style="background:yellow" onclick="setColor('yellow')"></div>
+  <div class="colorCircle" style="background:white" onclick="setColor('white')"></div>
+</div>
+
+<video id="video" playsinline></video>
+<canvas id="canvas"></canvas>
+
+<script>
+
+const menu=document.getElementById("menu");
+const backBtn=document.getElementById("backBtn");
+const finishBtn=document.getElementById("finishBtn");
+const video=document.getElementById("video");
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+const colorPalette=document.getElementById("colorPalette");
+
+canvas.width=window.innerWidth;
+canvas.height=window.innerHeight;
+
+let squareSize=Math.min(canvas.width,canvas.height)*0.95;
+let squareX=(canvas.width-squareSize)/2;
+let squareY=(canvas.height-squareSize)/2;
+
+let mode=null;
+let camera=null;
+let drawings=[];
+let grabbed=null;
+let currentColor="white";
+let accuracyText="";
+
+
+// Emoji target positions
+let targetPositions={
+  "🟡":{x:squareX+squareSize/2,y:squareY+squareSize/2},
+  "👀":{x:squareX+squareSize/2,y:squareY+squareSize/2-60},
+  "👃":{x:squareX+squareSize/2,y:squareY+squareSize/2},
+  "👄":{x:squareX+squareSize/2,y:squareY+squareSize/2+70},
+  "🎩":{x:squareX+squareSize/2,y:squareY+squareSize/2-150}
+};
+
+let parts=[
+  {emoji:"🟡",x:squareX+200,y:squareY+300,size:250},
+  {emoji:"👀",x:squareX+450,y:squareY+150,size:70},
+  {emoji:"👃",x:squareX+300,y:squareY+500,size:60},
+  {emoji:"👄",x:squareX+500,y:squareY+450,size:70},
+  {emoji:"🎩",x:squareX+350,y:squareY+100,size:150}
+];
+
+function setColor(c){ currentColor=c; }
+
+function startMode(m){
+  mode=m;
+  accuracyText="";
+  drawings=[];
+  menu.style.display="none";
+  backBtn.style.display="block";
+  canvas.style.display="block";
+
+  if(mode==="draw"){
+    colorPalette.style.display="block";
+    finishBtn.style.display="none";  // ❌ No finish in draw
+  } else {
+    colorPalette.style.display="none";
+    finishBtn.style.display="block"; // ✅ Finish only in emoji
+  }
+
+  startCamera();
+}
+
+function goBack(){
+  if(camera) camera.stop();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  drawings=[];
+  grabbed=null;
+  accuracyText="";
+  menu.style.display="block";
+  backBtn.style.display="none";
+  finishBtn.style.display="none";
+  canvas.style.display="none";
+  colorPalette.style.display="none";
+}
+
+function calculateEmojiAccuracy(){
+  if(mode!=="shape") return;
+
+  let totalScore=0;
+
+  parts.forEach(p=>{
+    let target=targetPositions[p.emoji];
+    let distance=Math.hypot(p.x-target.x,p.y-target.y);
+    let score=Math.max(0,100-(distance/2));
+    totalScore+=score;
+  });
+
+  let finalScore=Math.floor(totalScore/parts.length);
+  accuracyText="Accuracy: "+finalScore+"%";
+}
+
+function fingerOpen(tip,pip){ return tip.y<pip.y; }
+
+function drawLines(){
+  ctx.lineWidth=4;
+  ctx.lineCap="round";
+  for(let i=1;i<drawings.length;i++){
+    ctx.strokeStyle=drawings[i].color;
+    ctx.beginPath();
+    ctx.moveTo(drawings[i-1].x,drawings[i-1].y);
+    ctx.lineTo(drawings[i].x,drawings[i].y);
+    ctx.stroke();
+  }
+}
+
+function drawParts(){
+  parts.forEach(p=>{
+    ctx.font=p.size+"px Arial";
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+    ctx.fillText(p.emoji,p.x,p.y);
+  });
+}
+
+function isInside(p,x,y){
+  return Math.hypot(x-p.x,y-p.y)<p.size/2;
+}
+
+const hands=new Hands({
+  locateFile:file=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands:1,
+  modelComplexity:1,
+  minDetectionConfidence:0.7,
+  minTrackingConfidence:0.7
+});
+
+hands.onResults(results=>{
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  ctx.save();
+  ctx.translate(canvas.width,0);
+  ctx.scale(-1,1);
+
+  ctx.drawImage(results.image,
+    0,0,results.image.width,results.image.height,
+    squareX,squareY,squareSize,squareSize);
+
+  ctx.beginPath();
+  ctx.rect(squareX,squareY,squareSize,squareSize);
+  ctx.clip();
+
+  if(mode==="draw") drawLines();
+  if(mode==="shape") drawParts();
+
+  if(results.multiHandLandmarks?.length>0){
+
+    const lm=results.multiHandLandmarks[0];
+
+    const indexTip=lm[8];
+    const middleTip=lm[12];
+    const ringTip=lm[16];
+    const pinkyTip=lm[20];
+
+    const indexPip=lm[6];
+    const middlePip=lm[10];
+    const ringPip=lm[14];
+    const pinkyPip=lm[18];
+
+    const thumbTip=lm[4];
+
+    let x=squareX+indexTip.x*squareSize;
+    let y=squareY+indexTip.y*squareSize;
+
+    let indexOpen=fingerOpen(indexTip,indexPip);
+    let middleOpen=fingerOpen(middleTip,middlePip);
+    let ringOpen=fingerOpen(ringTip,ringPip);
+    let pinkyOpen=fingerOpen(pinkyTip,pinkyPip);
+
+    let allOpen=indexOpen&&middleOpen&&ringOpen&&pinkyOpen;
+
+    // ✏ DRAW MODE
+    if(mode==="draw"){
+
+      // Draw with only index open
+      if(indexOpen&&!middleOpen&&!ringOpen&&!pinkyOpen){
+        drawings.push({x,y,color:currentColor});
+      }
+
+      // 🧽 Eraser if all fingers open
+      if(allOpen){
+        drawings=drawings.filter(p=>Math.hypot(p.x-x,p.y-y)>40);
+      }
+    }
+
+    // 😀 Emoji Mode
+    if(mode==="shape"){
+      let dx=indexTip.x-thumbTip.x;
+      let dy=indexTip.y-thumbTip.y;
+      let pinch=Math.sqrt(dx*dx+dy*dy)<0.05;
+
+      if(pinch){
+        if(!grabbed){
+          for(let p of parts){
+            if(isInside(p,x,y)){ grabbed=p; break; }
+          }
+        }
+      } else grabbed=null;
+
+      if(grabbed){
+        grabbed.x=x;
+        grabbed.y=y;
+      }
+    }
+
+    ctx.fillStyle="white";
+    ctx.beginPath();
+    ctx.arc(x,y,10,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+
+  if(accuracyText){
+    ctx.fillStyle="yellow";
+    ctx.font="40px Arial";
+    ctx.fillText(accuracyText,canvas.width/2,60);
+  }
+
+});
+
+function startCamera(){
+  camera=new Camera(video,{
+    onFrame:async()=>{await hands.send({image:video});},
+    width:640,
+    height:480
+  });
+  camera.start();
+}
+
+</script>
+</body>
+</html>
